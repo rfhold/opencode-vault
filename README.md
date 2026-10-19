@@ -23,7 +23,7 @@ Add this Git package to `~/.config/opencode/opencode.json` on the OpenCode serve
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-vault@git+ssh://git@git.holdenitdown.net/rfhold/opencode-vault.git#opencode/v0.1.0"]
+  "plugins": ["opencode-vault@git+ssh://git@git.holdenitdown.net/rfhold/opencode-vault.git#opencode/v0.1.1"]
 }
 ```
 
@@ -32,6 +32,7 @@ No npm publication or separate CLI installation is necessary.
 The server plugin entry automatically loads the package's TUI export; no separate TUI configuration is necessary.
 Place this plugin after other plugins that alter model requests or the native shell tool.
 The Git release contains generated `dist` entrypoints because OpenCode disables install lifecycle scripts.
+The package uses `bundle`, not `build`, so pacote skips Git dependency preparation even with install scripts disabled.
 The dot updater checks `opencode/vX.Y.Z` tags hourly and advances the shared pin.
 Each host receives that pin through its normal dot refresh, not an automatic macOS scheduler.
 
@@ -209,7 +210,7 @@ Install dependencies and build this checkout:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm run build
+pnpm run bundle
 ```
 
 For local development, opt in with an ignored `opencode.json` at the repository root:
@@ -229,7 +230,7 @@ Git installs must work without `prepare` or other install lifecycle scripts.
 ```sh
 pnpm test
 pnpm run typecheck
-pnpm run build
+pnpm run bundle
 git diff --check
 ```
 

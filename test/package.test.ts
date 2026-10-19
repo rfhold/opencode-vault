@@ -11,6 +11,20 @@ const run = promisify(execFile)
 const root = fileURLToPath(new URL("..", import.meta.url))
 const entrypoints = ["index", "tui", "rpc", "cli"]
 
+function expectNoGitPreparation(manifest: { scripts: Record<string, string> }) {
+  // pacote 21.5.1 lib/git.js #prepareDir checks these keys, independently of ignoreScripts.
+  for (const script of ["postinstall", "build", "preinstall", "install", "prepack", "prepare"]) {
+    expect(manifest.scripts).not.toHaveProperty(script)
+  }
+  expect(manifest).not.toHaveProperty("workspaces")
+  expect(manifest.scripts.bundle).toBe("esbuild src/index.ts src/tui.ts src/rpc.ts src/cli.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outdir=dist")
+}
+
+test("release metadata bypasses pacote Git dependency preparation", async () => {
+  const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"))
+  expectNoGitPreparation(manifest)
+})
+
 test("release entrypoints match a fresh deterministic build", async () => {
   const options = {
     absWorkingDir: root, entryPoints: entrypoints.map((name) => `src/${name}.ts`),
@@ -37,9 +51,15 @@ test("packed release installs and loads with lifecycle scripts disabled", async 
     await mkdir(artifact)
     await mkdir(consumer)
     await run("pnpm", ["pack", "--pack-destination", artifact], { cwd: root })
+    const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"))
     const archives = await readdir(artifact)
-    expect(archives).toEqual(["opencode-vault-0.1.0.tgz"])
+    expect(archives).toEqual([`${manifest.name}-${manifest.version}.tgz`])
     const tarball = join(artifact, archives[0]!)
+    const { stdout: metadata } = await run("tar", ["-xOf", tarball, "package/package.json"])
+    const packedManifest = JSON.parse(metadata)
+    expect(packedManifest.name).toBe(manifest.name)
+    expect(packedManifest.version).toBe(manifest.version)
+    expectNoGitPreparation(packedManifest)
     const { stdout: contents } = await run("tar", ["-tzf", tarball])
     expect(contents.trim().split("\n").sort()).toEqual([
       "package/README.md", ...entrypoints.map((name) => `package/dist/${name}.js`), "package/package.json",
