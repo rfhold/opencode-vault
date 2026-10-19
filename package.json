@@ -1,0 +1,15 @@
+{
+  "name": "opencode-vault",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./dist/index.js", "./tui": "./dist/tui.js", "./rpc": "./dist/rpc.js" },
+  "bin": { "opencode-bao": "./dist/cli.js" },
+  "files": ["dist", "README.md"],
+  "packageManager": "pnpm@10.10.0",
+  "engines": { "node": ">=22.19" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit", "build": "esbuild src/index.ts src/tui.ts src/rpc.ts src/cli.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outdir=dist" },
+  "dependencies": { "@opencode/plugin": "2.0.31", "@opencode/schema": "2.0.31", "effect": "4.0.1" },
+  "devDependencies": { "@types/node": "22.19.11", "esbuild": "0.25.12", "typescript": "5.9.3", "vitest": "4.1.11" },
+  "pnpm": { "onlyBuiltDependencies": ["esbuild"] }
+}
