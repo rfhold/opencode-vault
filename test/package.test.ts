@@ -22,6 +22,7 @@ function expectNoGitPreparation(manifest: { scripts: Record<string, string> }) {
 
 test("release metadata bypasses pacote Git dependency preparation", async () => {
   const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"))
+  expect(manifest.version).toBe("0.1.2")
   expectNoGitPreparation(manifest)
 })
 

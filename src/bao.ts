@@ -20,11 +20,17 @@ export class LoginBusy extends Error {}
 
 export async function config(directory = root): Promise<Config> {
   try {
-    for (const path of [directory, join(directory, "config.json")]) {
-      const info = await lstat(path)
-      if (info.isSymbolicLink() || info.uid !== process.getuid!() || (info.mode & 0o022)) throw new LocalSetupError("permissions")
+    const trusted = async (path: string) => {
+      const link = await lstat(path)
+      if (link.uid !== process.getuid!()) throw new LocalSetupError("permissions")
+      const resolved = await realpath(path)
+      const info = await stat(resolved)
+      if (info.uid !== process.getuid!() || (info.mode & 0o022)) throw new LocalSetupError("permissions")
+      return resolved
     }
-    const raw = JSON.parse(await readFile(join(directory, "config.json"), "utf8"))
+    const resolved = await trusted(directory)
+    const file = await trusted(join(resolved, "config.json"))
+    const raw = JSON.parse(await readFile(file, "utf8"))
     return parseConfig(raw)
   } catch (error) {
     if (error instanceof LocalSetupError) throw error

@@ -12,6 +12,10 @@ This package requires operator setup. It does not install services, change OpenC
 
 Create `~/.config/opencode-bao/config.json` from [examples/config.json](examples/config.json).
 Use an owner-controlled directory and file with no group or world write permission.
+The directory and file can be symlinks, such as normal dot-managed links with mode `0777`.
+The plugin checks ownership of the config directory/file entries and their final resolved targets.
+Targets must not allow group or world writes; the plugin does not inspect every intermediate symlink.
+This support applies only to configuration; encrypted state retains its separate trust checks.
 The file contains endpoint settings and catalog/read token-role names.
 Legacy `parentTokenPolicies` and `parentIdentityPolicies` fields remain accepted but do not enforce policy expectations.
 The old `bundles` map is rejected; migrate it to `catalogRole` and `readRole` after configuring the new server roles.
@@ -23,7 +27,7 @@ Add this Git package to `~/.config/opencode/opencode.json` on the OpenCode serve
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-vault@git+ssh://git@git.holdenitdown.net/rfhold/opencode-vault.git#opencode/v0.1.1"]
+  "plugins": ["opencode-vault@git+ssh://git@git.holdenitdown.net/rfhold/opencode-vault.git#opencode/v0.1.2"]
 }
 ```
 

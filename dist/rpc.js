@@ -17,7 +17,7 @@ var diagnostics = {
   stale: "Stale Bao operation: session version changed; reopen /bao and inspect current state before selecting changes.",
   state: "Bao session state unavailable: local state is unreadable or locked; check storage access without resetting existing state.",
   missing: `Bao configuration unavailable: create ${configPath} from examples/config.json, then configure Bao roles before /bao-login.`,
-  permissions: `Bao configuration unavailable: ${configPath} and its directory must be owned by you, not symlinks, and not group/world writable.`,
+  permissions: "Bao configuration unavailable: you must own the config file, directory targets, and symlinks. Targets must not allow group or world writes.",
   json: `Bao configuration unavailable: fix invalid JSON in ${configPath}.`,
   schema: `Bao configuration unavailable: check HTTPS address, mount, prefix, oidc, optional oidcRole, catalogRole, readRole and absolute bao executable in ${configPath}; replace the old bundles map with role names.`,
   executable: `Bao unavailable: check the absolute bao executable location in ${configPath}; it must exist and be executable.`,

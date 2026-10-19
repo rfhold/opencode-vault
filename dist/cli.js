@@ -36,7 +36,7 @@ var diagnostics = {
   stale: "Stale Bao operation: session version changed; reopen /bao and inspect current state before selecting changes.",
   state: "Bao session state unavailable: local state is unreadable or locked; check storage access without resetting existing state.",
   missing: `Bao configuration unavailable: create ${configPath} from examples/config.json, then configure Bao roles before /bao-login.`,
-  permissions: `Bao configuration unavailable: ${configPath} and its directory must be owned by you, not symlinks, and not group/world writable.`,
+  permissions: "Bao configuration unavailable: you must own the config file, directory targets, and symlinks. Targets must not allow group or world writes.",
   json: `Bao configuration unavailable: fix invalid JSON in ${configPath}.`,
   schema: `Bao configuration unavailable: check HTTPS address, mount, prefix, oidc, optional oidcRole, catalogRole, readRole and absolute bao executable in ${configPath}; replace the old bundles map with role names.`,
   executable: `Bao unavailable: check the absolute bao executable location in ${configPath}; it must exist and be executable.`,
@@ -278,11 +278,17 @@ var LoginBusy = class extends Error {
 };
 async function config(directory = root) {
   try {
-    for (const path of [directory, join3(directory, "config.json")]) {
-      const info = await lstat(path);
-      if (info.isSymbolicLink() || info.uid !== process.getuid() || info.mode & 18) throw new LocalSetupError("permissions");
-    }
-    const raw = JSON.parse(await readFile2(join3(directory, "config.json"), "utf8"));
+    const trusted = async (path) => {
+      const link = await lstat(path);
+      if (link.uid !== process.getuid()) throw new LocalSetupError("permissions");
+      const resolved2 = await realpath(path);
+      const info = await stat2(resolved2);
+      if (info.uid !== process.getuid() || info.mode & 18) throw new LocalSetupError("permissions");
+      return resolved2;
+    };
+    const resolved = await trusted(directory);
+    const file = await trusted(join3(resolved, "config.json"));
+    const raw = JSON.parse(await readFile2(file, "utf8"));
     return parseConfig(raw);
   } catch (error) {
     if (error instanceof LocalSetupError) throw error;
