@@ -9,6 +9,7 @@ import { LocalSetupError, failureData, rpcDiagnostic } from "./diagnostics"
 import { Sessions } from "./state"
 import { Scrubber } from "./redact"
 import { BaoRpc, type Status } from "./rpc"
+import { supportedHost } from "./platform"
 
 export const Invocation = Context.Reference<Readonly<Record<string, string>> | undefined>("opencode-bao/Invocation", { defaultValue: () => undefined })
 const privateIO = <A>(work: () => Promise<A>) => Effect.tryPromise({ try: work, catch: () => new Error("Bao operation unavailable") })
@@ -120,16 +121,16 @@ export const install = Effect.fnUntraced(function* (ctx: PluginContext, sessions
     catch: (error) => {
       if (error instanceof LoginBusy) return context.error("busy", "Bao login already in progress; finish the existing browser sign-in", {})
       const data = failureData(error) ?? {}
-      return context.error("unavailable", rpcDiagnostic({ type: "unavailable", data }) ?? "Bao login failed or timed out; retry /bao-login or check trusted configuration, local browser, Keychain and dedicated role; do not reset existing state", data)
+      return context.error("unavailable", rpcDiagnostic({ type: "unavailable", data }) ?? "Bao login failed or timed out; check the local browser, OS credential store, trusted configuration and dedicated role. Do not reset existing state.", data)
     },
   })
   yield* ctx.rpc.register(BaoRpc, { status: handler("status"), enable: handler("enable"), disable: handler("disable"), login }).pipe(Effect.orDie)
 })
 
 export default Plugin.define({
-  id: "opencode.bao",
+  id: "opencode-vault",
   effect: (ctx) => Effect.gen(function* () {
-    if (process.platform !== "darwin") return
+    if (!supportedHost()) return
     const sessions = new Sessions(stateRoot, encryptionKey)
     yield* install(ctx, sessions, undefined, readiness(), undefined, async () => new Bao(await config()))
   }),

@@ -1031,7 +1031,9 @@ test("legacy parent policy fields remain accepted but optional", () => {
   }
 })
 
-test("OpenBao 2.6.2 CLI login through native RPC and TUI succeeds only after server validation and auth read-back", async () => {
+test("OpenBao 2.6.2 CLI login through native RPC and TUI succeeds only after server validation and auth read-back", async ({ onTestFinished }) => {
+  vi.stubEnv("DISPLAY", ":93")
+  onTestFinished(() => { vi.unstubAllEnvs() })
   const state = await sessions()
   const accounts = new Map([["initialized", "v1"], ["snapshot-key", (state.key as Buffer).toString("base64")]])
   let readable = true

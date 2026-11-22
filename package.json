@@ -1,15 +1,15 @@
 {
   "name": "opencode-vault",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./dist/index.js", "./tui": "./dist/tui.js", "./rpc": "./dist/rpc.js" },
+  "exports": { ".": "./dist/index.js", "./tui": "./dist/tui.js", "./rpc": "./dist/rpc.js", "./gui-experimental": "./dist/gui-experimental.cjs" },
   "bin": { "opencode-bao": "./dist/cli.js" },
   "files": ["dist", "README.md"],
   "packageManager": "pnpm@10.10.0",
   "engines": { "node": ">=22.19" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit", "bundle": "esbuild src/index.ts src/tui.ts src/rpc.ts src/cli.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outdir=dist" },
-  "dependencies": { "@opencode/plugin": "2.0.31", "@opencode/schema": "2.0.31", "effect": "4.0.1" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit", "bundle": "esbuild src/index.ts src/tui.ts src/rpc.ts src/cli.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outdir=dist && esbuild src/gui.ts --bundle --platform=node --target=node22 --format=cjs --external:@opencode/plugin/gui --external:@opencode/plugin/rpc --outfile=dist/gui-experimental.cjs" },
+  "dependencies": { "@opencode/plugin": "2.3.2", "@opencode/schema": "2.3.2", "effect": "4.1.0" },
   "devDependencies": { "@types/node": "22.19.11", "esbuild": "0.25.12", "typescript": "5.9.3", "vitest": "4.1.11" },
   "pnpm": { "onlyBuiltDependencies": ["esbuild"] }
 }

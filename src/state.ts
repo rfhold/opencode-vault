@@ -52,8 +52,10 @@ export class Sessions {
   // Only the explicit first-use helper creates the ledger; runtime reads never recreate it.
   async initialize() {
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
-    if ((await readdir(this.directory)).length) throw failure()
-    await this.encrypted("ledger", { sessions: {}, history: [] }, true)
+    await this.locked(async () => {
+      if ((await readdir(this.directory)).some((name) => name !== ".lock")) throw failure()
+      await this.encrypted("ledger", { sessions: {}, history: [] }, true)
+    })
   }
 
   private async locked<A>(work: () => Promise<A>): Promise<A> {

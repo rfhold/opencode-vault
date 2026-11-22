@@ -10,6 +10,7 @@ import { tmpdir } from "node:os"
 const run = promisify(execFile)
 const root = fileURLToPath(new URL("..", import.meta.url))
 const entrypoints = ["index", "tui", "rpc", "cli"]
+const files = [...entrypoints.map((name) => `${name}.js`), "gui-experimental.cjs"]
 
 function expectNoGitPreparation(manifest: { scripts: Record<string, string> }) {
   // pacote 21.5.1 lib/git.js #prepareDir checks these keys, independently of ignoreScripts.
@@ -17,28 +18,28 @@ function expectNoGitPreparation(manifest: { scripts: Record<string, string> }) {
     expect(manifest.scripts).not.toHaveProperty(script)
   }
   expect(manifest).not.toHaveProperty("workspaces")
-  expect(manifest.scripts.bundle).toBe("esbuild src/index.ts src/tui.ts src/rpc.ts src/cli.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outdir=dist")
 }
 
 test("release metadata bypasses pacote Git dependency preparation", async () => {
   const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"))
-  expect(manifest.version).toBe("0.1.2")
+  expect(manifest.version).toBe("0.2.0")
   expectNoGitPreparation(manifest)
 })
 
 test("release entrypoints match a fresh deterministic build", async () => {
-  const options = {
-    absWorkingDir: root, entryPoints: entrypoints.map((name) => `src/${name}.ts`),
-    bundle: true, platform: "node" as const, target: "node22", format: "esm" as const,
-    packages: "external" as const, outdir: "dist", write: false,
-  }
-  const first = await build(options)
-  const second = await build(options)
-  expect(first.outputFiles).toHaveLength(4)
-  for (const [index, output] of first.outputFiles!.entries()) {
-    expect(Buffer.from(output.contents)).toEqual(await readFile(output.path))
-    expect(output.contents).toEqual(second.outputFiles![index]!.contents)
-    expect(output.text).not.toContain(root)
+  const shared = { absWorkingDir: root, bundle: true, platform: "node" as const, target: "node22", write: false }
+  const configs = [
+    { ...shared, entryPoints: entrypoints.map((name) => `src/${name}.ts`), format: "esm" as const, packages: "external" as const, outdir: "dist" },
+    { ...shared, entryPoints: ["src/gui.ts"], format: "cjs" as const, external: ["@opencode/plugin/gui", "@opencode/plugin/rpc"], outfile: "dist/gui-experimental.cjs" },
+  ]
+  for (const options of configs) {
+    const first = await build(options)
+    const second = await build(options)
+    for (const [index, output] of first.outputFiles!.entries()) {
+      expect(Buffer.from(output.contents)).toEqual(await readFile(output.path))
+      expect(output.contents).toEqual(second.outputFiles![index]!.contents)
+      expect(output.text).not.toContain(root)
+    }
   }
 })
 
@@ -63,7 +64,7 @@ test("packed release installs and loads with lifecycle scripts disabled", async 
     expectNoGitPreparation(packedManifest)
     const { stdout: contents } = await run("tar", ["-tzf", tarball])
     expect(contents.trim().split("\n").sort()).toEqual([
-      "package/README.md", ...entrypoints.map((name) => `package/dist/${name}.js`), "package/package.json",
+      "package/README.md", ...files.map((name) => `package/dist/${name}`), "package/package.json",
     ].sort())
     await writeFile(join(consumer, "package.json"), JSON.stringify({
       private: true, type: "module", packageManager: "pnpm@10.10.0",
@@ -75,23 +76,43 @@ test("packed release installs and loads with lifecycle scripts disabled", async 
     })
     const installed = join(consumer, "node_modules", "opencode-vault")
     expect((await readdir(installed)).sort()).toEqual(["README.md", "dist", "node_modules", "package.json"])
-    for (const name of entrypoints) {
-      expect(await readFile(join(installed, "dist", `${name}.js`))).toEqual(await readFile(resolve(root, "dist", `${name}.js`)))
+    for (const name of files) {
+      expect(await readFile(join(installed, "dist", name))).toEqual(await readFile(resolve(root, "dist", name)))
     }
     // Resolve Effect beside the installed package, as its own imports do.
     await writeFile(join(consumer, "check.mjs"), `
       import assert from 'node:assert/strict';
       import { createRequire } from 'node:module';
+      import { readFileSync } from 'node:fs';
       import { pathToFileURL } from 'node:url';
       import server from 'opencode-vault';
       import tui from 'opencode-vault/tui';
       import { BaoRpc } from 'opencode-vault/rpc';
       const require = createRequire(import.meta.resolve('opencode-vault'));
       const { Effect } = await import(pathToFileURL(require.resolve('effect')).href);
-      assert.equal(server.id, 'opencode.bao');
+      assert.equal(server.id, 'opencode-vault');
       assert.equal(tui.id, 'opencode.bao.tui');
-      assert.ok(BaoRpc);
-      Object.defineProperty(process, 'platform', { value: 'linux' });
+      assert.equal(BaoRpc.id, 'opencode.bao');
+      const bundle = import.meta.resolve('opencode-vault/gui-experimental');
+      assert.ok(bundle.endsWith('/dist/gui-experimental.cjs'));
+      const rpc = { Rpc: { define(value) { assert.deepEqual(value, BaoRpc); return value; } } };
+      const gui = { Plugin: { define: (value) => value }, Command: Symbol('Command') };
+      const module = { exports: {} };
+      new Function('require', 'module', 'exports', readFileSync(new URL(bundle), 'utf8'))((name) => {
+        if (name === '@opencode/plugin/gui') return gui;
+        if (name === '@opencode/plugin/rpc') return rpc;
+        if (name === 'node:os') return { homedir: () => '[inert module node:os]' };
+        if (name === 'node:path') return { join: () => '[inert module node:path]' };
+        throw new Error('Unexpected GUI external: ' + name);
+      }, module, module.exports);
+      const commands = [];
+      assert.equal(module.exports.default.os, undefined);
+      module.exports.default.setup({ signal: new AbortController().signal, add(token, command) {
+        assert.equal(token, gui.Command);
+        commands.push(command.slash.name);
+      } });
+      assert.deepEqual(commands, ['bao-login', 'bao']);
+      Object.defineProperty(process, 'platform', { value: 'win32' });
       const ctx = new Proxy({}, { get() { throw new Error('Unexpected context access'); } });
       await Effect.runPromise(Effect.scoped(server.effect(ctx)));
       assert.equal(await tui.setup(ctx), undefined);

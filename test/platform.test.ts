@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import server, { install } from "../src/index"
 import tui from "../src/tui"
 import { Sessions } from "../src/state"
-import { readiness, config, encryptionKey } from "../src/bao"
+import { readiness, config, encryptionKey, parseConfig } from "../src/bao"
 
 vi.mock("../src/state", async (original) => ({
   ...await original<typeof import("../src/state")>(),
@@ -19,7 +19,15 @@ vi.mock("../src/bao", async (original) => ({
 const nativePlatform = process.platform
 afterEach(() => { Object.defineProperty(process, "platform", { value: nativePlatform }); vi.clearAllMocks() })
 
-test.each(["linux", "win32", "freebsd"])("%s entrypoints return before context, state, or credentials", async (platform) => {
+test.each([["linux", "/usr/bin/bao"], ["darwin", "/opt/homebrew/bin/bao"]])("%s resolves the Bao executable default and accepts only absolute overrides", (platform, path) => {
+  Object.defineProperty(process, "platform", { value: platform })
+  const config = { catalogRole: "catalog", readRole: "read" }
+  expect(parseConfig(config).bao).toBe(path)
+  expect(parseConfig({ ...config, bao: "/custom/bin/bao" }).bao).toBe("/custom/bin/bao")
+  expect(() => parseConfig({ ...config, bao: "bin/bao" })).toThrow()
+})
+
+test.each(["win32", "freebsd"])("%s entrypoints return before context, state, or credentials", async (platform) => {
   Object.defineProperty(process, "platform", { value: platform })
   const ctx = new Proxy({}, { get() { throw new Error("Unexpected context access") } })
   await Effect.runPromise(Effect.scoped(server.effect(ctx as never)))
@@ -30,8 +38,8 @@ test.each(["linux", "win32", "freebsd"])("%s entrypoints return before context, 
   expect(encryptionKey).not.toHaveBeenCalled()
 })
 
-test("macOS entrypoints retain server hooks, RPC, and TUI commands without credential access", async () => {
-  Object.defineProperty(process, "platform", { value: "darwin" })
+test.each(["darwin", "linux"])("%s entrypoints retain server hooks, RPC, and TUI commands without credential access", async (platform) => {
+  Object.defineProperty(process, "platform", { value: platform })
   const transform = vi.fn(() => Effect.void)
   const shellHook = vi.fn(() => Effect.void)
   const sessionHook = vi.fn((_name: string, _handler: unknown) => Effect.void)

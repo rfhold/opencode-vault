@@ -1,11 +1,15 @@
 import { homedir } from "node:os"
-import { join } from "node:path"
-import { lstat, readFile, realpath, stat } from "node:fs/promises"
+import { dirname, join } from "node:path"
+import { lstat, mkdir, readFile, realpath, stat } from "node:fs/promises"
 import { randomBytes } from "node:crypto"
 import { Sessions } from "./state"
 import { validateEnvironment } from "./environment"
 import { runProcess } from "./process"
 import { LocalSetupError, type Stage } from "./diagnostics"
+import { hostCredentials, MissingCredential, type Credentials } from "./credentials"
+import { defaultBao, loginEnvironment, supportedHost } from "./platform"
+
+export { MissingCredential, type Credentials } from "./credentials"
 
 export const root = join(homedir(), ".config", "opencode-bao")
 export const stateRoot = join(homedir(), ".local", "share", "opencode-bao", "sessions")
@@ -44,7 +48,7 @@ export function parseConfig(raw: any): Config {
   try {
     const result: Config = {
       address: raw.address ?? "https://openbao.holdenitdown.net", mount: raw.mount ?? "kv",
-      prefix: raw.prefix ?? "env", oidc: raw.oidc ?? "oidc", bao: raw.bao ?? "/opt/homebrew/bin/bao", catalogRole: raw.catalogRole, readRole: raw.readRole,
+      prefix: raw.prefix ?? "env", oidc: raw.oidc ?? "oidc", bao: raw.bao ?? defaultBao(), catalogRole: raw.catalogRole, readRole: raw.readRole,
       parentTokenPolicies: raw.parentTokenPolicies, parentIdentityPolicies: raw.parentIdentityPolicies,
       ...(raw.oidcRole === undefined ? {} : { oidcRole: raw.oidcRole }),
     }
@@ -58,25 +62,9 @@ export function parseConfig(raw: any): Config {
   } catch (error) { throw error instanceof LocalSetupError ? error : new LocalSetupError("schema") }
 }
 
-export interface Credentials { get(account: string): Promise<string>; set(account: string, value: string): Promise<void> }
-export class MissingCredential extends Error {}
-export const keychain: Credentials = {
-  async get(account) {
-    const child = await runProcess("/usr/bin/security", ["find-generic-password", "-s", "opencode-bao", "-a", account, "-w"], { timeout: 15000, maxBytes: 65536, stderr: "ignore", env: { PATH: "/usr/bin:/bin", HOME: homedir() } }).catch(() => { throw denied() })
-    const value = child.stdout.trim()
-    if (child.exitCode === 44) throw new MissingCredential()
-    if (child.exitCode !== 0 || !value) throw denied()
-    return value
-  },
-  async set(account, value) {
-    const child = await runProcess("/usr/bin/security", ["add-generic-password", ...(account === "auth" ? ["-U"] : []), "-s", "opencode-bao", "-a", account, "-w", value], { timeout: 15000, stdout: "ignore", stderr: "ignore", env: { PATH: "/usr/bin:/bin", HOME: homedir() } }).catch(() => { throw denied() })
-    if (child.exitCode !== 0) throw denied()
-  },
-}
-
 type Auth = { token: string; expires: number | null }
 export class Bao {
-  constructor(readonly settings: Config, readonly credentials: Credentials = keychain, readonly http: typeof fetch = fetch, readonly run = runProcess) {}
+  constructor(readonly settings: Config, readonly credentials: Credentials = hostCredentials(), readonly http: typeof fetch = fetch, readonly run = runProcess) {}
 
   private async api(path: string, token: string, body?: unknown, signal?: AbortSignal, method = body === undefined ? "GET" : "POST", stage: Stage = "parent") {
     try {
@@ -95,7 +83,7 @@ export class Bao {
 
   async parent() {
     let auth: Auth
-    try { auth = JSON.parse(await this.credentials.get("auth")) } catch { throw new LocalSetupError("stored_login") }
+    try { auth = JSON.parse(await this.credentials.get("auth")) } catch (error) { throw error instanceof LocalSetupError ? error : new LocalSetupError("stored_login") }
     if (typeof auth?.token !== "string" || !auth.token || (auth.expires !== null && (typeof auth.expires !== "number" || !Number.isFinite(auth.expires) || auth.expires <= Date.now()))) throw new LocalSetupError("stored_login")
     try {
       const expires = await this.identity(auth.token)
@@ -174,7 +162,7 @@ export class Bao {
     let stage: "executable" | "storage" | "authentication" | "identity" = "executable"
     try {
       signal.throwIfAborted()
-      if (process.platform !== "darwin") throw denied()
+      if (!supportedHost()) throw denied()
       const path = await realpath(this.settings.bao)
       const executable = await stat(path)
       if (!executable.isFile() || !(executable.mode & 0o111)) throw denied()
@@ -182,9 +170,10 @@ export class Bao {
       await initialize(this.credentials, options.directory ?? stateRoot)
       stage = "authentication"
       signal.throwIfAborted()
+      const env = await loginEnvironment(this.settings.address, this.run, signal)
+      signal.throwIfAborted()
       const child = await this.run(path, ["login", "-non-interactive", "-no-store", "-format=json", "-method=oidc", `-path=${this.settings.oidc}`, `role=${this.settings.oidcRole ?? "opencode"}`, "skip_browser=false", "abort_on_error=true"], {
-        stderr: "ignore", signal, timeout: 120000, maxBytes: 1048576,
-        env: { PATH: "/opt/homebrew/bin:/usr/bin:/bin", HOME: homedir(), BAO_ADDR: this.settings.address },
+        stderr: "ignore", signal, timeout: 120000, maxBytes: 1048576, env,
       })
       signal.throwIfAborted()
       if (child.exitCode !== 0) throw denied()
@@ -206,24 +195,24 @@ export class Bao {
     const expires = await this.identity(auth.client_token, signal)
     signal?.throwIfAborted()
     const payload = JSON.stringify({ token: auth.client_token, expires })
-    try { await this.credentials.set("auth", payload) } catch { throw new LocalSetupError("credential_set") }
+    try { await this.credentials.set("auth", payload) } catch (error) { throw error instanceof LocalSetupError ? error : new LocalSetupError("credential_set") }
     signal?.throwIfAborted()
     let saved
-    try { saved = await this.credentials.get("auth") } catch (error) { throw new LocalSetupError(error instanceof MissingCredential ? "credential_read_missing" : "credential_read") }
+    try { saved = await this.credentials.get("auth") } catch (error) { throw error instanceof LocalSetupError ? error : new LocalSetupError(error instanceof MissingCredential ? "credential_read_missing" : "credential_read") }
     signal?.throwIfAborted()
     if (saved !== payload) throw new LocalSetupError("credential_mismatch")
   }
 }
 
-export async function encryptionKey(credentials = keychain) {
+export async function encryptionKey(credentials = hostCredentials()) {
   if (await credentials.get("initialized") !== "v1") throw denied()
   const value = await credentials.get("snapshot-key")
   const key = Buffer.from(value, "base64")
-  if (key.length !== 32) throw denied()
+  if (key.length !== 32 || key.toString("base64") !== value) throw denied()
   return key
 }
 
-export function readiness(credentials = keychain, directory = stateRoot) {
+export function readiness(credentials = hostCredentials(), directory = stateRoot) {
   let protectedState = false
   const probe = async () => {
     if (protectedState) return true
@@ -244,18 +233,23 @@ export function readiness(credentials = keychain, directory = stateRoot) {
   return probe
 }
 
-export async function initialize(credentials = keychain, directory = stateRoot) {
+export async function initialize(credentials = hostCredentials(), directory = stateRoot) {
   const get = async (account: string) => {
     try { return await credentials.get(account) } catch (error) { if (error instanceof MissingCredential) return undefined; throw error }
   }
   const marker = await get("initialized")
   const key = await get("snapshot-key")
   let exists = false
-  try { await stat(directory); exists = true } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw denied() }
+  try { await lstat(directory); exists = true } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw denied() }
   if (marker !== undefined || key !== undefined || exists) {
     if (marker !== "v1" || !key) throw denied()
     await new Sessions(directory, () => encryptionKey(credentials)).read("initialization-check")
     return
+  }
+  if (process.platform === "linux") {
+    // Reserve the independent directory anchor before any process can create credentials.
+    await mkdir(dirname(directory), { recursive: true, mode: 0o700 })
+    await mkdir(directory, { mode: 0o700 })
   }
   await credentials.set("initialized", "v1")
   await credentials.set("snapshot-key", randomBytes(32).toString("base64"))

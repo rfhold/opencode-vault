@@ -2,7 +2,7 @@ import { expect, test } from "vitest"
 import { Effect, JsonSchema, Schema, SchemaRepresentation } from "effect"
 import { BaoRpc } from "../src/rpc"
 
-// Match OpenCode 2.0.31 packages/core/src/rpc.ts parse(), without pattern overrides.
+// Match OpenCode 2.3.2 packages/core/src/rpc.ts parse(), without pattern overrides.
 const codec = (schema: JsonSchema.JsonSchema) => Schema.make<Schema.Codec<unknown>>(
   SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(schema)).ast,
 )

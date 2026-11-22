@@ -1,11 +1,12 @@
 import * as Plugin from "@opencode/plugin/tui/plugin"
 import { BaoRpc, type Status } from "./rpc"
 import { rpcDiagnostic } from "./diagnostics"
+import { supportedHost } from "./platform"
 
 export default Plugin.define({
   id: "opencode.bao.tui",
   setup(ctx) {
-    if (process.platform !== "darwin") return
+    if (!supportedHost()) return
     const rpc = ctx.client.rpc(BaoRpc)
     let loggingIn = false
     let picking = false
@@ -26,7 +27,7 @@ export default Plugin.define({
           ctx.ui.toast.show({ message: "Bao login complete; use /bao to select environment bundles", variant: "success" })
         } catch (error) {
           if (lifetime.signal.aborted) return
-          ctx.ui.toast.show({ message: rpcDiagnostic(error) ?? "Bao login failed, timed out, or is already in progress. Finish any existing browser sign-in, then retry /bao-login. Check local browser, Keychain, trusted configuration and dedicated role; do not reset existing state.", variant: "error", duration: 10000 })
+          ctx.ui.toast.show({ message: rpcDiagnostic(error) ?? "Bao login failed, timed out, or is already in progress. Finish any current browser sign-in, then retry /bao-login. Check the local browser, OS credential store, trusted configuration and dedicated role. Do not reset existing state.", variant: "error", duration: 10000 })
         } finally { loggingIn = false }
       },
     }, {

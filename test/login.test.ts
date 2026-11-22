@@ -1,14 +1,22 @@
-import { afterEach, expect, test, vi } from "vitest"
+import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { mkdtemp, rm, realpath, writeFile, chmod } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { join } from "node:path"
+import { homedir } from "node:os"
 import { Bao, LoginBusy, MissingCredential, week, type Config, type Credentials } from "../src/bao"
 import type { runProcess } from "../src/process"
 import tui from "../src/tui"
 import { diagnostics, LocalSetupError, type Diagnostic } from "../src/diagnostics"
 
 const directories: string[] = []
-afterEach(async () => { vi.useRealTimers(); await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))) })
+const nativePlatform = process.platform
+beforeEach(() => { vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", undefined) })
+afterEach(async () => {
+  vi.useRealTimers()
+  vi.unstubAllEnvs()
+  Object.defineProperty(process, "platform", { value: nativePlatform })
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
+})
 const settings: Config = { address: "https://bao.invalid", mount: "kv", prefix: "env", oidc: "oidc", bao: process.execPath, catalogRole: "opencode-env-catalog", readRole: "opencode-env-read", parentTokenPolicies: ["opencode-parent"], parentIdentityPolicies: [] }
 // OpenBao v2.6.2 api/secret.go SecretAuth JSON: no TokenType field; nil IdentityPolicies becomes null.
 const auth = { client_token: "synthetic-parent", accessor: "synthetic-accessor", policies: ["opencode-parent"], token_policies: ["opencode-parent"], identity_policies: null, metadata: { role: "opencode", email: "synthetic@example.invalid" }, orphan: true, entity_id: "synthetic-entity", lease_duration: week, renewable: true, mfa_requirement: null }
@@ -26,7 +34,10 @@ async function fixture(run: typeof runProcess) {
   return { bao: new Bao(settings, credentials, http as typeof fetch, run), accounts, writes, http, options: { directory: join(directory, "sessions") } }
 }
 
-test("explicit login initializes once, invokes noninteractive browser OIDC privately, and refuses lost state", async () => {
+test.each(["linux", "darwin"])("%s login initializes once, invokes noninteractive browser OIDC privately, and refuses lost state", async (platform) => {
+  Object.defineProperty(process, "platform", { value: platform })
+  const graphical = { DBUS_SESSION_BUS_ADDRESS: "unix:path=/synthetic/bus", XDG_RUNTIME_DIR: "/synthetic/runtime", DISPLAY: ":93", WAYLAND_DISPLAY: "synthetic-wayland", XAUTHORITY: "/synthetic/auth", XDG_CURRENT_DESKTOP: "GNOME" }
+  for (const [name, value] of Object.entries({ ...graphical, BAO_TOKEN: "synthetic", VAULT_TOKEN: "synthetic", BROWSER: "untrusted-ambient-command", LD_PRELOAD: "untrusted-loader" })) vi.stubEnv(name, value)
   const run = vi.fn<typeof runProcess>(async () => ({ stdout: JSON.stringify({ auth }), stderr: "synthetic-private-oidc-url", exitCode: 0 }))
   const f = await fixture(run)
   const get = vi.spyOn(f.bao.credentials, "get")
@@ -45,7 +56,10 @@ test("explicit login initializes once, invokes noninteractive browser OIDC priva
   expect(options.stderr).toBe("ignore")
   expect(options.timeout).toBe(120000)
   expect(options.maxBytes).toBe(1048576)
-  expect(options.env).toEqual({ PATH: "/opt/homebrew/bin:/usr/bin:/bin", HOME: process.env.HOME, BAO_ADDR: "https://bao.invalid" })
+  expect(options.env).toEqual({
+    PATH: platform === "linux" ? "/usr/bin:/bin" : "/opt/homebrew/bin:/usr/bin:/bin",
+    HOME: homedir(), BAO_ADDR: "https://bao.invalid", ...(platform === "linux" ? graphical : {}),
+  })
   expect(options.signal).toBeInstanceOf(AbortSignal)
   const key = f.accounts.get("snapshot-key")
   await f.bao.login(f.options)
@@ -55,6 +69,96 @@ test("explicit login initializes once, invokes noninteractive browser OIDC priva
   await expect(f.bao.login(f.options)).rejects.toThrow(diagnostics.state)
   expect(run).toHaveBeenCalledTimes(2)
   expect(f.writes).toHaveLength(4)
+})
+
+const linuxBus = "unix:path=/synthetic/bus"
+const linuxLoginEnv = { PATH: "/usr/bin:/bin", HOME: homedir(), BAO_ADDR: settings.address, XDG_RUNTIME_DIR: "/synthetic/runtime" }
+const loginResult = { stdout: JSON.stringify({ auth }), stderr: "", exitCode: 0 }
+const managerResult = (data: unknown[]) => ({ stdout: JSON.stringify({ type: "as", data }), stderr: "synthetic-private-stderr", exitCode: 0 })
+function linuxWithoutDisplay() {
+  Object.defineProperty(process, "platform", { value: "linux" })
+  for (const [name, value] of Object.entries({ DISPLAY: undefined, WAYLAND_DISPLAY: undefined, XAUTHORITY: undefined, XDG_CURRENT_DESKTOP: undefined, DBUS_SESSION_BUS_ADDRESS: linuxBus, XDG_RUNTIME_DIR: linuxLoginEnv.XDG_RUNTIME_DIR })) vi.stubEnv(name, value)
+}
+
+test.each([undefined, "/synthetic/inherited-auth"])("Linux only fills absent browser settings before starting Bao (inherited XAUTHORITY: %s)", async (xauthority) => {
+  linuxWithoutDisplay()
+  vi.stubEnv("XAUTHORITY", xauthority)
+  vi.stubEnv("BAO_TOKEN", "ambient-private-token")
+  const run = vi.fn<typeof runProcess>()
+    .mockResolvedValueOnce(managerResult([
+      "DISPLAY=:0", "WAYLAND_DISPLAY=wayland-0", "XAUTHORITY=/synthetic/manager-auth", "XDG_CURRENT_DESKTOP=GNOME",
+      "DBUS_SESSION_BUS_ADDRESS=tcp:host=ignored", "XDG_RUNTIME_DIR=/ignore", "HOME=/ignore", "BAO_ADDR=https://ignore.invalid",
+      "PATH=/ignore", "BAO_TOKEN=manager-private-token", "BROWSER=ignored", "LD_PRELOAD=ignored",
+    ]))
+    .mockResolvedValueOnce(loginResult)
+  const f = await fixture(run)
+  await f.bao.login(f.options)
+  expect(run).toHaveBeenCalledTimes(2)
+  expect(run).toHaveBeenNthCalledWith(1, "/usr/bin/busctl", [
+    "--user", "--json=short", "get-property", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "Environment",
+  ], { env: { PATH: "/usr/bin:/bin", DBUS_SESSION_BUS_ADDRESS: linuxBus }, signal: run.mock.calls[1]![2].signal, stderr: "ignore", timeout: 1000, maxBytes: 65536 })
+  expect(run).toHaveBeenNthCalledWith(2, await realpath(process.execPath), expect.arrayContaining(["login", "skip_browser=false"]), expect.objectContaining({
+    env: {
+      ...linuxLoginEnv, DBUS_SESSION_BUS_ADDRESS: linuxBus, DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0",
+      XAUTHORITY: xauthority ?? "/synthetic/manager-auth", XDG_CURRENT_DESKTOP: "GNOME",
+    },
+    stderr: "ignore",
+  }))
+  expect(f.writes).toEqual(["initialized", "snapshot-key", "auth"])
+})
+
+test.each(["DISPLAY", "WAYLAND_DISPLAY"])("Linux preserves a session with only %s", async (name) => {
+  linuxWithoutDisplay()
+  vi.stubEnv(name, "synthetic-inherited-display")
+  const run = vi.fn<typeof runProcess>().mockResolvedValue(loginResult)
+  const f = await fixture(run)
+  await f.bao.login(f.options)
+  expect(run).toHaveBeenCalledExactlyOnceWith(await realpath(process.execPath), expect.any(Array), expect.objectContaining({
+    env: { ...linuxLoginEnv, DBUS_SESSION_BUS_ADDRESS: linuxBus, [name]: "synthetic-inherited-display" },
+  }))
+})
+
+test.each([undefined, "tcp:host=synthetic", `${linuxBus};autolaunch:`])("Linux does not query a missing or nonlocal bus: %s", async (bus) => {
+  linuxWithoutDisplay()
+  vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", bus)
+  const run = vi.fn<typeof runProcess>().mockResolvedValue(loginResult)
+  const f = await fixture(run)
+  await f.bao.login(f.options)
+  expect(run).toHaveBeenCalledExactlyOnceWith(await realpath(process.execPath), expect.any(Array), expect.any(Object))
+})
+
+test.each([
+  ["missing executable or timeout", new Error("synthetic-private-process-error")],
+  ["unsuccessful lookup", { ...managerResult(["DISPLAY=:0"]), exitCode: 1 }],
+  ["unparseable reply", { ...managerResult([]), stdout: "synthetic-private-invalid-json" }],
+  ["invalid array", managerResult(["DISPLAY=:0", null])],
+  ["invalid display value", managerResult(["DISPLAY=:0\0ignored"])],
+] as const)("Linux continues without display settings after %s", async (_name, result) => {
+  linuxWithoutDisplay()
+  const run = vi.fn<typeof runProcess>().mockResolvedValue(loginResult)
+  if (result instanceof Error) run.mockRejectedValueOnce(result)
+  else run.mockResolvedValueOnce(result)
+  const f = await fixture(run)
+  await f.bao.login(f.options)
+  expect(run).toHaveBeenCalledTimes(2)
+  expect(run).toHaveBeenNthCalledWith(2, await realpath(process.execPath), expect.any(Array), expect.objectContaining({
+    env: { ...linuxLoginEnv, DBUS_SESSION_BUS_ADDRESS: linuxBus },
+  }))
+})
+
+test("Linux cancellation during the user manager lookup prevents Bao launch", async () => {
+  linuxWithoutDisplay()
+  const controller = new AbortController()
+  const run = vi.fn<typeof runProcess>(async () => {
+    controller.abort()
+    throw new Error("synthetic-private-manager-output")
+  })
+  const f = await fixture(run)
+  await expect(f.bao.login({ ...f.options, signal: controller.signal })).rejects.toEqual(new LocalSetupError("authentication"))
+  expect(run).toHaveBeenCalledTimes(1)
+  expect(run.mock.calls[0]![0]).toBe("/usr/bin/busctl")
+  expect(run.mock.calls[0]![2].signal?.aborted).toBe(true)
+  expect(f.accounts.has("auth")).toBe(false)
 })
 
 test("simultaneous login is rejected; CLI failures stay generic and release the guard", async () => {
@@ -461,7 +565,7 @@ test.each([undefined, null, {}, [], true, "authenticated", { authenticated: fals
     await commands.find((entry) => entry.id === "bao.login").run()
     expect(login).toHaveBeenCalledTimes(1)
     expect(toast.mock.calls.map(([value]) => value.variant)).toEqual(["info", "error"])
-    expect(toast.mock.lastCall![0].message).toContain("do not reset existing state")
+    expect(toast.mock.lastCall![0].message).toContain("Do not reset existing state")
     expect(JSON.stringify(toast.mock.calls)).not.toContain("synthetic-private-value")
   } finally { await cleanup?.() }
 })
@@ -489,7 +593,7 @@ test("TUI login is a discoverable explicit action; other actions never sign in a
   login.mockRejectedValue(new Error("synthetic-token-and-url"))
   await command.run()
   expect(JSON.stringify(toast.mock.calls)).not.toContain("synthetic-token-and-url")
-  expect(JSON.stringify(toast.mock.calls)).toContain("do not reset existing state")
+  expect(JSON.stringify(toast.mock.calls)).toContain("Do not reset existing state")
   for (const diagnostic of Object.keys(diagnostics) as (keyof typeof diagnostics)[]) {
     // Actual pinned promise RPC failure shape (Rpc.MethodError), not Error.message.
     login.mockRejectedValueOnce({ type: "unavailable", message: "synthetic-token-and-url", data: { diagnostic } })

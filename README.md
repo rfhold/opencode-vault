@@ -1,9 +1,11 @@
 # opencode-vault
 
-Per-session OpenBao environment bundles for OpenCode **2.0.31** and macOS.
+Per-session OpenBao environment bundles for OpenCode **2.3.2**.
 Development and the helper CLI require **Node.js 22.19 or newer** and **pnpm 10.10.0**.
 The built plugin also runs in OpenCode's Bun host; Bun is not required for development.
-The server and TUI plugins do nothing outside macOS, before context, Keychain, or state access.
+The Bao backend supports macOS with Keychain and graphical Linux with GNOME Keyring.
+The server and TUI plugins return on other systems before any context, credential, or state access.
+OpenCode Desktop shows `/bao-login` and `/bao` on all Desktop platforms. Both commands explain the backend limit on Windows without an RPC call.
 The plugin changes only model tool shell calls. Direct user shell calls remain outside its scope.
 
 ## Setup
@@ -22,18 +24,37 @@ The old `bundles` map is rejected; migrate it to `catalogRole` and `readRole` af
 The default endpoint is `https://openbao.holdenitdown.net`; that default does not create local configuration or dedicated server roles.
 Keep the home-directory ancestors owner-controlled too.
 
+### Host prerequisites
+
+- On macOS, Bao defaults to `/opt/homebrew/bin/bao`. The server needs Keychain and access to the default browser.
+- On Linux, Bao defaults to `/usr/bin/bao`. The server needs your graphical session bus and access to the default browser.
+- On CachyOS and Arch Linux, the relevant packages are `openbao`, `python-gobject`, `libsecret`, `gnome-keyring`, and `xdg-utils`.
+- Linux uses `/usr/bin/python3` and GI with libsecret. The only supported provider is the local GNOME Keyring daemon.
+- Use a password-protected, unlocked `login` keyring as the default Secret Service collection.
+- The plugin does not create or unlock a keyring. It never opens a Secret Service prompt.
+- Headless Linux falls outside the supported setup. If the server lacks access to Secret Service, protection fails closed.
+
+Omit `bao` to use the platform default, or set it to an absolute path.
+If the Linux configuration contains the macOS path, remove the `bao` override.
+
+### OpenCode
+
 Add this Git package to `~/.config/opencode/opencode.json` on the OpenCode server host:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-vault@git+ssh://git@git.holdenitdown.net/rfhold/opencode-vault.git#opencode/v0.1.2"]
+  "plugins": ["opencode-vault@git+ssh://git@git.holdenitdown.net/rfhold/opencode-vault.git#opencode/v0.2.0"]
 }
 ```
 
 Git access to this private repository requires an authorized SSH key.
 No npm publication or separate CLI installation is necessary.
 The server plugin entry automatically loads the package's TUI export; no separate TUI configuration is necessary.
+OpenCode Desktop 2.3.2 reads the plugin entry from the app's global `opencode.json(c)`.
+The `opencode/v0.2.0` release adds Linux support and the experimental Desktop GUI export.
+To try a local build, build this checkout and use its absolute path as the plugin entry in the global config.
+Desktop sends Bao requests only to its own local server, not to remote sessions.
 Place this plugin after other plugins that alter model requests or the native shell tool.
 The Git release contains generated `dist` entrypoints because OpenCode disables install lifecycle scripts.
 The package uses `bundle`, not `build`, so pacote skips Git dependency preparation even with install scripts disabled.
@@ -42,18 +63,18 @@ Each host receives that pin through its normal dot refresh, not an automatic mac
 
 Select **Bao login** from the OpenCode command palette, or use `/bao-login`.
 This explicit action prepares local storage and starts browser OIDC sign-in on the OpenCode server host.
-Use a local macOS OpenCode server with access to your default browser and Keychain.
+Use a local OpenCode server with access to your browser and OS credential store.
 The command works before you open a session.
 Complete browser sign-in within two minutes.
-The TUI reports safe local configuration/setup diagnostics and generic authentication-stage errors.
+The TUI reports safe local configuration/setup diagnostics and generic authentication-stage errors. Desktop reports generic errors.
 It never displays auth URLs, codes, tokens, or raw stderr.
 Login never starts automatically from model tools, shell calls, bundle controls, or errors.
 
-On first use, login creates an immutable Keychain initialization marker, one random snapshot key, and an empty encrypted host ledger.
+On first use, login creates an immutable initialization marker, one random snapshot key, and an empty encrypted host ledger.
 It never replaces a current key or recreates lost state.
 Partial initialization, absent keys, absent markers, and absent ledgers fail closed; login does not repair them.
 Recovery requires an explicit operator review that preserves all protection history.
-A pristine installation has no initialization marker, snapshot key, or state directory.
+A pristine installation has no initialization marker, snapshot key, or state directory, and the credential store confirms both credentials are absent.
 In that state, normal shell calls and outbound requests pass unchanged; hooks create no keys or state files.
 Explicit login remains available before initialization.
 Any initialization anchor activates strict state validation; partial initialization or later protection loss fails closed.
@@ -61,16 +82,19 @@ Each request checks readiness independently; no request reuses an earlier probe 
 Login starts the Bao executable's OIDC flow with `-non-interactive`, `-no-store`, and JSON output.
 The optional `oidcRole` setting defaults to `opencode`; Bao decides which roles the identity can use.
 Bao opens the default browser and listens on localhost port 8250 for its callback.
+On Linux, if the server inherits neither `DISPLAY` nor `WAYLAND_DISPLAY`, the plugin checks the systemd user manager over the same local session bus.
+The plugin uses `/usr/bin/busctl` to fill absent `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, and `XDG_CURRENT_DESKTOP` values for Bao.
+If the lookup fails, Bao uses the original environment that the plugin prepared.
 The OIDC role must allow `http://localhost:8250/oidc/callback`.
 The plugin ignores terminal stdin and discards Bao stderr, which includes the private authorization URL.
 It bounds the Bao child to two minutes and the overall login deadline to three minutes.
 Timeout or Effect interruption sends SIGTERM, then SIGKILL after 500 ms if necessary.
 The subprocess wrapper stops its wait after one further 500 ms and discards output on failure.
 Concurrent login requests in one server process fail with a generic busy status; no second browser flow starts.
-The TUI aborts its request on plugin unload or after 200 seconds.
-Cancellation cannot undo initialization or a Keychain write that already started.
-Keychain subprocesses have individual 15-second limits.
-The helper stores the dedicated parent token in Keychain, not `~/.vault-token`.
+The TUI and Desktop abort their requests on plugin unload or after 200 seconds.
+Cancellation cannot undo initialization or a credential write that already started.
+Credential helper subprocesses have individual 15-second limits.
+The helper stores the dedicated parent token in the OS credential store, not `~/.vault-token`.
 It does not pass ambient `BAO_TOKEN` or `VAULT_TOKEN` to Bao.
 It emits only a generic status message; it never prints the token or bundle values.
 
@@ -78,13 +102,17 @@ The CLI remains an operator fallback: `node dist/cli.js login` uses the same pri
 `node dist/cli.js init` remains available but is not a prerequisite for TUI login.
 
 Open a session and select **Bao environment bundles** from the command palette, or use `/bao`.
-The picker lists flat bundle names discovered through KV v2 metadata LIST, enabled key counts, and the host historical protection count. Listing never reads bundle values.
+The Desktop picker lists bundle names and whether each bundle is enabled. Select one bundle to toggle it, or cancel without changes.
+Neither picker reads bundle values to build the list.
+
+**TUI only:** The picker lists flat bundle names from KV v2 metadata LIST, enabled key counts, and the host historical protection count.
 Press Space to mark or unmark bundles for that session. Marks differ from each bundle's enabled state.
 Press Enter to toggle only marked bundles. Enter without marks changes nothing; Escape cancels all marks.
 The picker preserves search and focus as marks change, and shows a marked count plus each bundle's intended action.
 The TUI shows progress notifications before catalog, login, and batch operations start.
 Batch updates run serially, with disables first. A failure reports the failed bundle, action, safe cause, confirmed count, and unattempted count.
 The failed change's state can remain uncertain. Reopen `/bao` to inspect state before another selection. The plugin does not retry or roll back the batch.
+
 New sessions start with no active bundles.
 Each explicit RPC reloads trusted configuration once. New flat KV documents appear on the next picker open without a configuration or role change.
 An empty catalog shows a setup hint. If catalog access fails, the picker reports a safe reason and still offers loaded bundles for disable. Loaded values remain unchanged.
@@ -190,7 +218,17 @@ Missing trusted configuration disables bundle controls, but the plugin still ins
 
 ## Storage and limitations
 
-- Keychain service `opencode-bao` holds accounts `auth`, `snapshot-key`, and immutable initialization marker `initialized`.
+- The OS credential store holds `auth`, `snapshot-key`, and the immutable initialization marker `initialized` under service `opencode-bao`.
+- Linux requires an encrypted Secret Service session and an encrypted GNOME `login.keyring` file. It has no plaintext fallback.
+- The helper verifies the local daemon and uses its `HOME` and `XDG_DATA_HOME` to locate the keyring.
+- The helper checks ownership, permissions, and the file header. It does not read the keyring payload from disk.
+- Legacy paths, symbolic links, ambiguous file names, and a daemon that the helper cannot inspect fail closed.
+- The Linux server needs access to the user's session bus and to the keyring daemon's `/proc` metadata.
+- Keep the keyring password nonempty. GNOME Keyring can rewrite current credentials in plaintext if you remove its password.
+- The helper cannot prevent GNOME Keyring from rewriting credentials during a concurrent password change.
+- Linux rejects a locked or unavailable store, duplicate matches, unexpected item locations, and malformed credentials.
+- On first use, Linux reserves the state directory before it creates credentials. A partial setup fails closed.
+- The Linux helper transfers credentials through private pipes, not process arguments or environment variables.
 - `~/.local/share/opencode-bao/sessions` holds AES-256-GCM session snapshots and an independent encrypted `ledger`.
 - The ledger holds protected session identifiers, mutation versions, and the shared known-value union.
 - The plugin commits and syncs the ledger before it exposes a new snapshot or environment.
@@ -217,7 +255,7 @@ pnpm install --frozen-lockfile
 pnpm run bundle
 ```
 
-For local development, opt in with an ignored `opencode.json` at the repository root:
+For local TUI development, opt in with an ignored `opencode.json` at the repository root:
 
 ```jsonc
 {
@@ -227,8 +265,8 @@ For local development, opt in with an ignored `opencode.json` at the repository 
 ```
 
 Use this local entry instead of the global Git entry during development to avoid duplicate activation.
-The pinned host requires the physical `dist` directory for local directory plugins, not the package root.
-Rebuild and include all four generated `dist/*.js` files before each future release tag.
+For Desktop development, use the global checkout entry described above instead of the project-local `./dist` entry.
+Rebuild and include all five generated files in `dist/` before each future release tag.
 Git installs must work without `prepare` or other install lifecycle scripts.
 
 ```sh
@@ -243,12 +281,14 @@ It executes concurrent `/bin/sh` children with synthetic values and checks sessi
 Other tests cover the shared ledger, absent-state failures, request credentials, environment validation, mutation races, encoding variants, and server-bound login deadlines.
 Provider-shaped payload tests cover arbitrary schemas, encrypted content, opaque attachments, SDK options, and text redaction after disable across unrelated sessions.
 Synthetic login tests cover explicit TUI dispatch, private RPC results, first-use initialization, lost-state refusal, duplicate requests, cancellation, subprocess timeout, and noninteractive arguments.
-Platform tests verify macOS activation and inert non-macOS entrypoints without real Keychain access.
+Platform tests verify macOS and Linux activation and inert server and TUI entrypoints elsewhere.
+Desktop tests use a fake host to check slash commands, local RPC dispatch, selection, and cancellation.
+Set `OPENCODE_TEST_SECRET_SERVICE=1` to test with a temporary GNOME Keyring, a private `dbus-run-session` bus, and synthetic credentials.
 Package tests compare generated bytes with fresh builds and inspect a tarball's exact file list.
 They install that tarball in a temporary fixture with lifecycle scripts disabled, then load every export and the CLI.
 The fixture uses public registry downloads; it does not verify SSH access or OpenCode's Git installer.
 The adapter does not execute the installed OpenCode native executor.
-Installed OpenCode end-to-end behavior, Keychain access, OIDC login, Bao policies, and live provider transports need separate verification.
+Installed OpenCode end-to-end behavior, macOS Keychain access, OIDC login, Bao policies, and live provider transports need separate verification.
 
-API references: [V2 plugins](https://opencode.ai/v2/docs/build/plugins), [CLI plugins](https://opencode.ai/v2/docs/build/plugins/cli), [RPC](https://opencode.ai/v2/docs/build/plugins/rpc).
-The implementation pins `@opencode/plugin` and `@opencode/schema` to `2.0.31`, with Effect `4.0.1`.
+API references: [V2 plugins](https://opencode.ai/docs/build/plugins), [CLI plugins](https://opencode.ai/docs/build/plugins/cli), [GUI plugins](https://opencode.ai/docs/build/plugins/gui), [RPC](https://opencode.ai/docs/build/plugins/rpc).
+The implementation pins `@opencode/plugin` and `@opencode/schema` to `2.3.2`, with Effect `4.1.0`.
